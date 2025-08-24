@@ -155,6 +155,67 @@ def test_graph():
         expected_outputs=[torch.tensor([[2.565, 5.614], [4.012, -4.877]])],
     )
 
+def test_graph_with_mean_chain_keepdim_false():
+    # y = mean( (x1 @ x2^T)/10 + x3, dim=1, keepdim=False )  -> shape (B,)
+    x1 = ad.Variable("x1")
+    x2 = ad.Variable("x2")
+    x3 = ad.Variable("x3")
+
+    y = ad.mean(ad.matmul(x1, ad.transpose(x2, 1, 0)) / 10 + x3, dim=(1,), keepdim=False)
+    evaluator = ad.Evaluator(eval_nodes=[y])
+
+    B, T, H = 3, 4, 5
+    x1_val = torch.randn(B, H)
+    x2_val = torch.randn(T, H)
+    x3_val = torch.randn(B, T)
+
+    # 期望使用 torch 直接算
+    expected = ((x1_val @ x2_val.t()) / 10 + x3_val).mean(dim=1, keepdim=False)
+
+    check_evaluator_output(
+        evaluator,
+        input_values={x1: x1_val, x2: x2_val, x3: x3_val},
+        expected_outputs=[expected],
+    )
+
+
+def test_graph_shared_nodes_forward():
+    # 共享子图：z = (x + x) * (x - 2)
+    x = ad.Variable("x")
+    z = ad.mul(ad.add(x, x), ad.add_by_const(x, -2.0))
+    evaluator = ad.Evaluator(eval_nodes=[z])
+
+    x_val = torch.tensor([[1.0, -2.0, 3.0]], dtype=torch.float32)
+    expected = (x_val + x_val) * (x_val - 2.0)
+    check_evaluator_output(evaluator, {x: x_val}, [expected])
+
+
+def test_graph_layernorm_relu_mean_combo():
+    # y = mean( relu(layernorm(x)) , dim=(1,), keepdim=True )
+    x = ad.Variable("x")
+    y = ad.mean(ad.relu(ad.layernorm(x, normalized_shape=[4])), dim=(1,), keepdim=True)
+    evaluator = ad.Evaluator(eval_nodes=[y])
+
+    x_val = torch.randn(2, 4)
+    expected = torch.nn.functional.layer_norm(x_val, [4])
+    expected = torch.relu(expected).mean(dim=1, keepdim=True)
+    check_evaluator_output(evaluator, {x: x_val}, [expected])
+
+
+def test_graph_broadcasting_add_matmul_chain():
+    # 验证 broadcast： ((x1 @ x2^T) / 10) + x3 ，形状匹配
+    x1 = ad.Variable("x1")
+    x2 = ad.Variable("x2")
+    x3 = ad.Variable("x3")
+    y = ad.matmul(x1, ad.transpose(x2, 1, 0)) / 10 + x3
+    evaluator = ad.Evaluator(eval_nodes=[y])
+
+    x1_val = torch.randn(2, 3)
+    x2_val = torch.randn(4, 3)
+    x3_val = torch.randn(2, 4)
+    expected = (x1_val @ x2_val.t()) / 10 + x3_val
+    check_evaluator_output(evaluator, {x1: x1_val, x2: x2_val, x3: x3_val}, [expected])
+
 
 if __name__ == "__main__":
     test_identity()
@@ -167,3 +228,7 @@ if __name__ == "__main__":
     test_matmul()
 
     test_graph()
+    test_graph_with_mean_chain_keepdim_false()
+    test_graph_shared_nodes_forward()
+    test_graph_layernorm_relu_mean_combo()
+    test_graph_broadcasting_add_matmul_chain()

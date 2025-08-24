@@ -186,6 +186,53 @@ def test_power():
         torch.tensor([[1.0, 4.0], [9.0, 16.0]], dtype=torch.float32)
     )
 
+def test_mean_keepdim_true_multi_dims():
+    x = ad.Variable("x")
+    # 在 (1, 2) 轴上取均值，保留维度
+    y = ad.mean(x, dim=(1, 2), keepdim=True)
+    x_val = torch.tensor(
+        [[[1., 2.], [3., 4.], [5., 6.]],
+         [[7., 8.], [9.,10.], [11.,12.]]], dtype=torch.float32)  # (2,3,2)
+    expected = x_val.mean(dim=(1,2), keepdim=True)
+    check_compute_output(y, [x_val], expected)
+
+
+def test_mean_negative_dim_keepdim_false():
+    x = ad.Variable("x")
+    # 在最后一维上取均值（负轴），不保留维度
+    y = ad.mean(x, dim=(-1,), keepdim=False)
+    x_val = torch.tensor([[1.,2.,3.,4.],[ -1.,1.,3.,5. ]], dtype=torch.float32)
+    expected = x_val.mean(dim=-1, keepdim=False)
+    check_compute_output(y, [x_val], expected)
+
+
+def test_sum_keepdim_false_and_true():
+    x = ad.Variable("x")
+    y1 = ad.sum_op(x, dim=(1,), keepdim=False)
+    y2 = ad.sum_op(x, dim=(1,), keepdim=True)
+    x_val = torch.tensor([[1.,2.,3.,4.],[ -1.,1.,3.,5. ]], dtype=torch.float32)
+    check_compute_output(y1, [x_val], x_val.sum(dim=1, keepdim=False))
+    check_compute_output(y2, [x_val], x_val.sum(dim=1, keepdim=True))
+
+
+def test_expand_as_3d_2d_to_3d():
+    # 检验你自定义的 expand_as_3d： [B,T] → [B,S,T]
+    a = ad.Variable("a")
+    b = ad.Variable("b")  # 仅提供目标形状
+    node = ad.expand_as_3d(a, b)
+    a_val = torch.randn(4, 10)        # [B=4, T=10]
+    b_val = torch.randn(4, 3, 10)     # [B=4, S=3, T=10]
+    expected = a_val.unsqueeze(1).expand_as(b_val)
+    check_compute_output(node, [a_val, b_val], expected)
+
+
+def test_transpose_negative_axes():
+    x = ad.Variable("x")
+    y = ad.transpose(x, -1, -2)  # 交换最后两维
+    x_val = torch.tensor([[[1.,2.],[3.,4.],[5.,6.]]], dtype=torch.float32)  # (1,3,2)
+    expected = x_val.transpose(-1, -2)
+    check_compute_output(y, [x_val], expected)
+
 if __name__ == "__main__":
     test_mul()
     test_mul_by_const()
@@ -200,3 +247,7 @@ if __name__ == "__main__":
     test_broadcast()
     test_power()
     test_sqrt()
+    test_mean_keepdim_true_multi_dims()
+    test_mean_negative_dim_keepdim_false()
+    test_sum_keepdim_false_and_true()
+    test_expand_as_3d_2d_to_3d()

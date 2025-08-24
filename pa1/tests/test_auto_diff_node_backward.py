@@ -271,6 +271,150 @@ def test_power():
         expected_outputs=[torch.tensor([[2.0, 4.0], [6.0, 8.0]])]
     )
 
+
+def test_mean_keepdim_false():
+    x = ad.Variable("x")
+    y = ad.mean(x, dim=(1,), keepdim=False)  # 形状 (2,)
+    y_grad = ad.Variable("y_grad")
+    # dL/dx
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.tensor([[1.0, 2.0, 3.0, 4.0],
+                          [-1.0, 1.0, 3.0, 5.0]], dtype=torch.float32)
+
+    # 设外部传入的 dy/dy = y_grad = [2.0, -1.0]
+    # keepdim=False 时，梯度需要在被约简维度上均分到每个元素：/4
+    y_grad_val = torch.tensor([2.0, -1.0], dtype=torch.float32)
+
+    # 期望 dL/dx:
+    # 第一行每个元素 2.0/4 = 0.5
+    # 第二行每个元素 -1.0/4 = -0.25
+    x_grad_expected = torch.tensor([[0.5, 0.5, 0.5, 0.5],
+                                   [-0.25, -0.25, -0.25, -0.25]], dtype=torch.float32)
+
+    check_evaluator_output(
+        evaluator,
+        input_values={x: x_val, y_grad: y_grad_val},
+        expected_outputs=[x_grad_expected],
+    )
+
+
+def test_mean_keepdim_true_multi_dims():
+    x = ad.Variable("x")
+    # 在 dim=(1,2) 上求平均，keepdim=True -> 输出形状 (2,1,1)
+    y = ad.mean(x, dim=(1, 2), keepdim=True)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.tensor([[[1.0, 2.0],
+                           [3.0, 4.0],
+                           [5.0, 6.0]],
+
+                          [[7.0, 8.0],
+                           [9.0, 10.0],
+                           [11.0, 12.0]]], dtype=torch.float32)  # 形状 (2,3,2)
+
+    # keepdim=True，外部梯度形状与 y 一致：(2,1,1)
+    # 令外部梯度为 1，按定义应均分到被约简的 3*2=6 个元素：1/6
+    y_grad_val = torch.ones((2, 1, 1), dtype=torch.float32)
+
+    x_grad_expected = torch.full_like(x_val, 1.0 / 6.0)
+
+    check_evaluator_output(
+        evaluator,
+        input_values={x: x_val, y_grad: y_grad_val},
+        expected_outputs=[x_grad_expected],
+    )
+
+def test_mean_negative_dim_keepdim_false():
+    x = ad.Variable("x")
+    # 在最后一维上做 mean，keepdim=False
+    y = ad.mean(x, dim=(-1,), keepdim=False)   # (B,)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.tensor([[1.,2.,3.,4.],[5.,6.,7.,8.]], dtype=torch.float32)   # (2,4)
+    y_grad_val = torch.tensor([3., -2.], dtype=torch.float32)                   # (2,)
+    # 每行均分到 4 个元素
+    expected = torch.tensor([[0.75,0.75,0.75,0.75], [-0.5,-0.5,-0.5,-0.5]])
+    check_evaluator_output(evaluator, {x: x_val, y_grad: y_grad_val}, [expected])
+
+
+def test_mean_keepdim_true_singleton_axes():
+    x = ad.Variable("x")
+    # 在 (1,2) 轴上 mean，保留维度 → 输出 (B,1,1)
+    y = ad.mean(x, dim=(1,2), keepdim=True)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.randn(2, 3, 5)     # (B=2, M=3, N=5)
+    y_grad_val = torch.ones(2, 1, 1) # 形状与 y 一致
+    N = 3*5
+    expected = torch.ones_like(x_val) * (1.0 / N)
+    check_evaluator_output(evaluator, {x: x_val, y_grad: y_grad_val}, [expected])
+
+
+def test_sum_keepdim_false():
+    # sum 的梯度应为把外部梯度广播回输入形状（不除以 N）
+    x = ad.Variable("x")
+    y = ad.sum_op(x, dim=(1,), keepdim=False)    # (B,)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.tensor([[1.,2.,3.],[4.,5.,6.]], dtype=torch.float32)  # (2,3)
+    y_grad_val = torch.tensor([2., -1.], dtype=torch.float32)           # (2,)
+    # 广播到 (2,3)
+    expected = torch.tensor([[2.,2.,2.], [-1.,-1.,-1.]], dtype=torch.float32)
+    check_evaluator_output(evaluator, {x: x_val, y_grad: y_grad_val}, [expected])
+
+
+def test_sum_keepdim_true_multi_dims():
+    x = ad.Variable("x")
+    y = ad.sum_op(x, dim=(1,2), keepdim=True)   # 输出 (B,1,1)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.randn(2, 3, 2)
+    y_grad_val = torch.tensor([[[3.]], [[-2.]]], dtype=torch.float32)   # (2,1,1)
+    expected = y_grad_val.expand_as(x_val)                               # 直接广播
+    check_evaluator_output(evaluator, {x: x_val, y_grad: y_grad_val}, [expected])
+
+
+def test_expand_as_3d_like_mean_case():
+    # 仿真 mean keepdim=False 的常见形状：y_grad (B,) 扩到 x (B,T)
+    # 这里我们直接测试 expand_as_3d 在反向中常见的广播行为
+    a = ad.Variable("a")  # 模拟 y_grad
+    b = ad.Variable("b")  # 模拟 x
+    node = ad.expand_as_3d(a, b)     # 仅测试 forward 输出是否符合预期
+    evaluator = ad.Evaluator(eval_nodes=[node])
+
+    a_val = torch.tensor([2., -1.], dtype=torch.float32)      # (B=2,)
+    b_val = torch.zeros(2, 4, dtype=torch.float32)            # (B=2, T=4)
+    expected = a_val.unsqueeze(1).expand_as(b_val)            # (2,4)
+    # 由于这里没有梯度节点，直接比较前向输出
+    out = evaluator.run({a: a_val, b: b_val})[0]
+    torch.testing.assert_close(out, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_transpose_negative_axes():
+    x = ad.Variable("x")
+    y = ad.transpose(x, -1, -2)
+    y_grad = ad.Variable("y_grad")
+    x_grad = y.op.gradient(y, y_grad)[0]
+    evaluator = ad.Evaluator(eval_nodes=[x_grad])
+
+    x_val = torch.randn(2, 3, 4)
+    y_grad_val = torch.randn(2, 4, 3)
+    expected = y_grad_val.transpose(-1, -2)  # 反向再转回
+    check_evaluator_output(evaluator, {x: x_val, y_grad: y_grad_val}, [expected])
+
+
 if __name__ == "__main__":
     test_mul()
     test_div()
@@ -284,4 +428,11 @@ if __name__ == "__main__":
     test_broadcast()
     test_sqrt()
     test_power()
-
+    test_mean_keepdim_false()
+    test_mean_keepdim_true_multi_dims()
+    test_mean_negative_dim_keepdim_false()
+    test_mean_keepdim_true_singleton_axes()
+    test_sum_keepdim_false()
+    test_sum_keepdim_true_multi_dims()
+    test_expand_as_3d_like_mean_case()
+    test_transpose_negative_axes()
